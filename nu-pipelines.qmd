@@ -1,0 +1,205 @@
+---
+title: "nu_plugin_edn × Babqua — Clojure-shaped pipelines in a notebook"
+filters:
+  - bb
+---
+
+This page demonstrates running [Nushell](https://www.nushell.sh) pipelines
+from inside Babqua-evaluated `{.clojure .bb}` blocks — using
+[`nu_plugin_edn`](https://github.com/franks42/nu_plugin_edn) to flow
+typed structured data between Clojure and Nushell over EDN bytes.
+
+Each block starts a fresh `nu` process, pipes EDN to its stdin, and reads
+EDN back from its stdout. The result is rendered by Babqua's Kindly
+machinery — table, code, chart, whichever the block's metadata declares.
+
+## Setup
+
+Two helpers hide the shell/stdin/stdout plumbing:
+
+```{.clojure .bb}
+(require '[babashka.process :as p]
+         '[clojure.edn :as edn]
+         '[clojure.string :as str])
+
+(defn nu->
+  "Run `pipeline` (a nu command string) with `input` piped to stdin.
+   `input` is pr-str'd as EDN if not already a string. Returns the
+   raw stdout string. Uses `nu --stdin -c` so the pipeline's first
+   command receives the bb-side stdin."
+  [input pipeline]
+  (let [stdin (cond
+                (string? input) input
+                (nil? input)    ""
+                :else           (pr-str input))]
+    (-> (p/sh {:in stdin} "nu" "--stdin" "-c" pipeline)
+        :out)))
+
+(defn nu->edn
+  "Like `nu->` but parses stdout back as EDN. The pipeline must end
+   with `to edn` for this to work."
+  [input pipeline]
+  (-> (nu-> input pipeline) edn/read-string))
+
+(defn nu-loaded?
+  "Quick sanity check that nu_plugin_edn is registered."
+  []
+  (= "1\n" (nu-> nil "plugin list | where name == edn | length")))
+```
+
+```{.clojure .bb}
+(if (nu-loaded?)
+  "✓ nu_plugin_edn is loaded"
+  "✗ nu_plugin_edn not registered — see github.com/franks42/nu_plugin_edn")
+```
+
+## 1. bb → nu → bb: filter and sort via Nushell
+
+Push some Clojure data through `from edn | where ... | sort-by | to edn`
+and read the structured result back. Babqua's `^:kind/table` metadata
+renders the returned vector of maps as an HTML table.
+
+```{.clojure .bb}
+^:kind/table
+(nu->edn
+  [{:filename "report.pdf" :size 142857}
+   {:filename "scratch"    :size 4096}
+   {:filename "data.csv"   :size 99999}
+   {:filename "tiny.txt"   :size 64}]
+  "from edn | where size > 1000 | sort-by size --reverse | to edn")
+```
+
+The filter / sort happens inside Nushell. Same data flowing in could be
+a 10K-row `bb produce.clj` stream and the pattern would be identical —
+incremental over the pipe via `--lines`.
+
+## 2. Round-trip via canonical EDN — `^cedn`
+
+`^cedn` is the canonical-EDN CLI from the sibling repo
+([canonical-edn](https://github.com/franks42/canonical-edn)). Pipe a
+Nushell value through it for byte-stable output suitable for hashing
+or signing. Different key orders produce identical bytes (and so
+identical hashes):
+
+```{.clojure .bb}
+^:kind/table
+(let [hash-of (fn [m]
+                (-> (nu-> m "from edn | to edn | ^cedn | sha256sum")
+                    str/trim
+                    (str/split #"\s")
+                    first))]
+  [{:value "{:a 1, :b 2}" :sha256 (hash-of {:a 1 :b 2})}
+   {:value "{:b 2, :a 1}" :sha256 (hash-of {:b 2 :a 1})}])
+```
+
+Both rows should show the same digest — `^cedn` normalizes key order and
+whitespace before the hash is computed. Same hash a bb program would
+produce via `(sha256 (cedn/canonical-bytes v))` directly.
+
+## 3. UUIDv7 generation — `^uuidv7`
+
+`^uuidv7` (from [uuidv7.cljc](https://github.com/franks42/uuidv7.cljc))
+emits EDN with `--format edn`. Pipe it through `from edn` to a Nushell
+record, drop the noisy 96-bit counter, render as a single-row table:
+
+```{.clojure .bb}
+^:kind/table
+[(nu->edn nil "^uuidv7 gen --format edn | from edn | reject counter | to edn")]
+```
+
+Generate a fresh UUIDv7, parse it via the CLI's `parse` subcommand,
+extract the embedded timestamp:
+
+```{.clojure .bb}
+^:kind/code
+(nu->edn nil
+  "^uuidv7 gen
+   | str trim
+   | ^uuidv7 parse $in
+   | from edn
+   | get datetime
+   | to edn")
+```
+
+The whole flow stays inside Nushell, including `$in` substitution and
+typed extraction via `get datetime`.
+
+## 4. Three-tool composition
+
+Generate a UUIDv7, parse to a record, attach context, canonicalize,
+hash. Three external CLIs (`^uuidv7`, `^cedn`, `sha256sum`), one
+Nushell pipe, structured data round-tripping the typed boundary.
+
+```{.clojure .bb}
+^:kind/code
+(str/trim
+  (nu-> nil
+    "^uuidv7 gen --format edn
+     | from edn
+     | insert source 'demo-notebook'
+     | insert at (date now)
+     | to edn
+     | ^cedn
+     | sha256sum"))
+```
+
+The result is a deterministic content hash for "this UUIDv7, attributed
+to this source, observed at this timestamp." A bb script could compute
+the same hash directly via the cedn library — but the Nushell pipe
+makes the composition visible in one line of shell.
+
+## 5. Chart from a Nushell-filtered dataset
+
+Push raw data through `nu` for filtering / sorting, hand the result
+off to Vega-Lite for plotting:
+
+```{.clojure .bb}
+^:kind/vega-lite
+{:data {:values
+        (nu->edn
+          [{:hour "08" :requests 142}
+           {:hour "09" :requests 358}
+           {:hour "10" :requests 412}
+           {:hour "11" :requests 287}
+           {:hour "12" :requests 199}
+           {:hour "13" :requests 88}
+           {:hour "14" :requests 51}]
+          "from edn | where requests > 100 | sort-by hour | to edn")}
+ :mark "bar"
+ :encoding {:x {:field :hour     :type :ordinal      :title "Hour"}
+            :y {:field :requests :type :quantitative :title "Requests"}}}
+```
+
+## Where this is going
+
+`nu->` / `nu->edn` could mature into a small shared library:
+
+- **stderr capture and propagation** — currently a nu pipeline error
+  silently produces empty stdout; a real helper should surface stderr
+  alongside the parse error
+- **exit-code awareness** — non-zero from any external in the pipe
+  should raise, not return nil
+- **multi-form streaming variant** — `nu->edn` over `to edn --lines`
+  could yield a lazy seq of forms, matching nu's incremental behavior
+  on the producer side
+- **pipeline-shape pre-validation** — refuse pipelines that don't end
+  with `to edn` when called via `nu->edn`
+- **`--meta` integration** — auto-attach Quarto block context (file,
+  line, run id) as Clojure reader metadata for downstream auditing
+
+The compositional pattern this demos — typed transforms inside Nushell
+on the EDN-bytes side, byte-level operations as `^cedn` / `^uuidv7` /
+`sha256sum` filters — is the **typed-value boundary principle** that
+`nu_plugin_edn` is built around. Quarto + Babqua makes it explorable
+inside a reproducible notebook.
+
+## Requirements
+
+- [Nushell](https://www.nushell.sh/book/installation.html) 0.112.2+ on PATH
+- [Babashka](https://github.com/babashka/babashka#installation) on PATH
+- [Quarto](https://quarto.org/docs/get-started/) on PATH
+- [Babqua](https://scicloj.github.io/babqua/) installed in this project (`quarto add scicloj/babqua`)
+- [`nu_plugin_edn`](https://github.com/franks42/nu_plugin_edn) registered and `plugin use edn` in `config.nu`
+- For sections 2-4: [`^cedn`](https://github.com/franks42/canonical-edn) and [`^uuidv7`](https://github.com/franks42/uuidv7.cljc) on PATH
+
+Render with: `quarto render nu-pipelines.qmd`
