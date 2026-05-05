@@ -100,3 +100,7 @@ Nushell, byte-level transforms as external CLIs (`^cedn`, `^uuidv7`,
 Experimental scratch / playground for evaluating whether `nu->` /
 `nu->edn` helpers are worth maturing into a published library. Sections
 2-4 require `^cedn` and `^uuidv7` on PATH and skip otherwise.
+
+## License
+
+MIT — same as Nushell, Babashka, and `nu_plugin_edn`. See `LICENSE`.
