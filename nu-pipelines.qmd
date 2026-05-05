@@ -63,10 +63,48 @@ Two helpers hide the shell/stdin/stdout plumbing:
     out))
 
 (defn nu->edn
-  "Like `nu->` but parses stdout back as EDN. The pipeline must end
-   with `to edn` for this to work."
+  "Like `nu->` but parses stdout as a SINGLE EDN value. The pipeline
+   must produce EDN bytes on stdout — typically by ending with
+   `to edn`, `^cedn`, `^uuidv7 gen --format edn`, or any other
+   EDN-emitting tail command. The contract is the bytes' shape, not
+   the tail name; we don't pre-validate the pipeline string.
+
+   Strict parse: reads one EDN value, then checks the rest of stdout
+   is whitespace-only. Catches the case where a forgotten `to edn`
+   leaves a Nushell table-rendering on stdout (`╭───┬───╮\\n│ ... │`)
+   — the table-drawing chars happen to be legal Clojure symbol
+   chars, so a naive `edn/read-string` would silently return a bogus
+   symbol value. The strict check rejects with a useful error
+   instead.
+
+   On any failure, raises with a stdout snippet and a hint pointing
+   at the typical fix."
   [input pipeline]
-  (-> (nu-> input pipeline) edn/read-string))
+  (let [out (nu-> input pipeline)
+        snippet (subs out 0 (min 200 (count out)))
+        ellipsis (when (> (count out) 200) "...")
+        fail (fn [reason cause]
+               (throw (ex-info (str "nu pipeline stdout is not a single EDN value\n"
+                                    "  reason:   " reason "\n"
+                                    "  pipeline: " pipeline "\n"
+                                    "  stdout:   " (pr-str (str snippet ellipsis)) "\n"
+                                    "  hint: end the pipeline with `to edn`, `^cedn`,"
+                                    " `^uuidv7 gen --format edn`,"
+                                    " or another EDN-emitting command")
+                               (cond-> {:pipeline pipeline :stdout out}
+                                 cause (assoc :cause cause)))))]
+    (let [rdr (java.io.PushbackReader. (java.io.StringReader. out))
+          eof (Object.)
+          v   (try (edn/read {:eof eof} rdr)
+                   (catch Throwable t (fail (str "parse error: " (.getMessage t)) t)))]
+      (when (= v eof)
+        (fail "empty stdout — pipeline produced nothing" nil))
+      (let [trailing (slurp rdr)]
+        (when-not (str/blank? trailing)
+          (fail (str "trailing non-whitespace content after first parsed value:\n  "
+                     (pr-str (subs trailing 0 (min 80 (count trailing)))))
+                nil)))
+      v)))
 
 (defn nu-loaded?
   "Quick sanity check that nu_plugin_edn is registered."
@@ -101,7 +139,7 @@ sections will throw with a clear error rather than render empty data.
 
 Push some Clojure data through `from edn | where ... | sort-by | to edn`
 and read the structured result back. Babqua's `^:kind/table` metadata
-renders the returned vector of maps as an HTML table.
+renders the returned vector of maps as an HTML table. 
 
 ```{.clojure .bb}
 ^:kind/table
