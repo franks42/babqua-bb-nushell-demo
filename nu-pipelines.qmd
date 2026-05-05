@@ -1,5 +1,5 @@
 ---
-title: "nu_plugin_edn × Babqua — Clojure-shaped pipelines in a notebook"
+title: "Babqua x Nushell — Clojure-shaped pipelines in a notebook"
 filters:
   - bb
 ---
@@ -26,14 +26,24 @@ Two helpers hide the shell/stdin/stdout plumbing:
   "Run `pipeline` (a nu command string) with `input` piped to stdin.
    `input` is pr-str'd as EDN if not already a string. Returns the
    raw stdout string. Uses `nu --stdin -c` so the pipeline's first
-   command receives the bb-side stdin."
+   command receives the bb-side stdin.
+
+   Throws on non-zero exit, surfacing stderr in the exception
+   message — so failures (missing external CLI, plugin not loaded,
+   pipeline syntax error) become a visible error block in the
+   notebook instead of silently producing empty output."
   [input pipeline]
   (let [stdin (cond
                 (string? input) input
                 (nil? input)    ""
-                :else           (pr-str input))]
-    (-> (p/sh {:in stdin} "nu" "--stdin" "-c" pipeline)
-        :out)))
+                :else           (pr-str input))
+        {:keys [out err exit]} (p/sh {:in stdin} "nu" "--stdin" "-c" pipeline)]
+    (when-not (zero? exit)
+      (throw (ex-info (str "nu pipeline failed (exit " exit "):\n"
+                           (str/trim err)
+                           "\n  pipeline: " pipeline)
+                      {:exit exit :pipeline pipeline :stderr err :stdout out})))
+    out))
 
 (defn nu->edn
   "Like `nu->` but parses stdout back as EDN. The pipeline must end
@@ -45,12 +55,27 @@ Two helpers hide the shell/stdin/stdout plumbing:
   "Quick sanity check that nu_plugin_edn is registered."
   []
   (= "1\n" (nu-> nil "plugin list | where name == edn | length")))
+
+(defn which
+  "Return the path to `cmd` on PATH, or nil if not found."
+  [cmd]
+  (let [{:keys [out exit]} (p/sh "which" cmd)]
+    (when (zero? exit) (str/trim out))))
 ```
 
+### Preflight diagnostic
+
+Before the sections that depend on external CLIs, see what's actually
+on PATH. If `^cedn` or `^uuidv7` shows missing here, the corresponding
+sections will throw with a clear error rather than render empty data.
+
 ```{.clojure .bb}
-(if (nu-loaded?)
-  "✓ nu_plugin_edn is loaded"
-  "✗ nu_plugin_edn not registered — see github.com/franks42/nu_plugin_edn")
+^:kind/table
+[{:tool "nu"            :path (or (which "nu") "MISSING")     :needed-for "all sections"}
+ {:tool "bb"            :path (or (which "bb") "MISSING")     :needed-for "the runtime itself"}
+ {:tool "nu_plugin_edn" :path (if (nu-loaded?) "registered" "NOT REGISTERED") :needed-for "all sections"}
+ {:tool "^cedn"         :path (or (which "cedn") "MISSING")   :needed-for "sections 2 & 4"}
+ {:tool "^uuidv7"       :path (or (which "uuidv7") "MISSING") :needed-for "sections 3 & 4"}]
 ```
 
 ## 1. bb → nu → bb: filter and sort via Nushell
