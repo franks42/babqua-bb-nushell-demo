@@ -19,8 +19,10 @@ nu -c 'plugin add ./nu_plugin_edn; plugin use edn'
 # 3. Install babqua extension
 quarto add scicloj/babqua
 
-# 4. Optional: install ^cedn and ^uuidv7 for the cross-tool sections
-#    (see github.com/franks42/canonical-edn and github.com/franks42/uuidv7.cljc)
+# 4. (Already done) ^cedn and ^uuidv7 ship in this repo's bin/ — no
+#    system install needed. The notebook prepends ./bin to PATH for
+#    its subprocess invocations. To upgrade, replace the binaries
+#    from canonical-edn / uuidv7.cljc GitHub Releases.
 ```
 
 ## Render
@@ -87,6 +89,8 @@ assistant — all trigger the same file watcher.
   bb→nu→bb pipelines, canonical hashing via `^cedn`, UUIDv7 generation
   + parsing via `^uuidv7`, three-tool composition, and a
   Nushell-filtered Vega-Lite chart.
+- `bin/cedn` — bundled [canonical-edn CLI](https://github.com/franks42/canonical-edn) v1.3.1.
+- `bin/uuidv7` — bundled [uuidv7 CLI](https://github.com/franks42/uuidv7.cljc) v0.6.0.
 - `_quarto.yml` — minimal Quarto project file.
 
 ## What this demos (in one sentence)
@@ -98,8 +102,10 @@ Nushell, byte-level transforms as external CLIs (`^cedn`, `^uuidv7`,
 ## Status
 
 Experimental scratch / playground for evaluating whether `nu->` /
-`nu->edn` helpers are worth maturing into a published library. Sections
-2-4 require `^cedn` and `^uuidv7` on PATH and skip otherwise.
+`nu->edn` helpers are worth maturing into a published library. The two
+external CLIs the demo composes with (`^cedn`, `^uuidv7`) ship in
+`bin/`, so a fresh `git clone` + `quarto render` Just Works without
+any extra installs.
 
 ## License
 

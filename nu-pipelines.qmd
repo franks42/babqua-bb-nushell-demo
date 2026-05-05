@@ -22,11 +22,27 @@ Two helpers hide the shell/stdin/stdout plumbing:
          '[clojure.edn :as edn]
          '[clojure.string :as str])
 
+;; Prepend the demo's bin/ dir to PATH for any subprocess we spawn,
+;; so adjacent ^cedn / ^uuidv7 binaries are discoverable without a
+;; system-wide install. Path is resolved relative to the file the bb
+;; runtime is invoked from — Quarto runs bb from the .qmd's project
+;; root, so "bin" resolves correctly here. If you move this notebook,
+;; adjust accordingly.
+(def ^:private demo-bin
+  (-> (java.io.File. "bin") .getAbsolutePath))
+
+(defn- subprocess-env []
+  (assoc (into {} (System/getenv))
+         "PATH" (str demo-bin java.io.File/pathSeparator
+                     (or (System/getenv "PATH") ""))))
+
 (defn nu->
   "Run `pipeline` (a nu command string) with `input` piped to stdin.
    `input` is pr-str'd as EDN if not already a string. Returns the
    raw stdout string. Uses `nu --stdin -c` so the pipeline's first
-   command receives the bb-side stdin.
+   command receives the bb-side stdin. The demo's bin/ dir is
+   prepended to PATH so nu can find ^cedn / ^uuidv7 without a system
+   install.
 
    Throws on non-zero exit, surfacing stderr in the exception
    message — so failures (missing external CLI, plugin not loaded,
@@ -37,7 +53,8 @@ Two helpers hide the shell/stdin/stdout plumbing:
                 (string? input) input
                 (nil? input)    ""
                 :else           (pr-str input))
-        {:keys [out err exit]} (p/sh {:in stdin} "nu" "--stdin" "-c" pipeline)]
+        {:keys [out err exit]} (p/sh {:in stdin :extra-env {"PATH" (get (subprocess-env) "PATH")}}
+                                     "nu" "--stdin" "-c" pipeline)]
     (when-not (zero? exit)
       (throw (ex-info (str "nu pipeline failed (exit " exit "):\n"
                            (str/trim err)
@@ -57,9 +74,11 @@ Two helpers hide the shell/stdin/stdout plumbing:
   (= "1\n" (nu-> nil "plugin list | where name == edn | length")))
 
 (defn which
-  "Return the path to `cmd` on PATH, or nil if not found."
+  "Return the path to `cmd` on PATH (with demo's bin/ prepended), or
+   nil if not found."
   [cmd]
-  (let [{:keys [out exit]} (p/sh "which" cmd)]
+  (let [{:keys [out exit]} (p/sh {:extra-env {"PATH" (get (subprocess-env) "PATH")}}
+                                 "which" cmd)]
     (when (zero? exit) (str/trim out))))
 ```
 
@@ -96,7 +115,7 @@ renders the returned vector of maps as an HTML table.
 
 The filter / sort happens inside Nushell. Same data flowing in could be
 a 10K-row `bb produce.clj` stream and the pattern would be identical —
-incremental over the pipe via `--lines`.
+incremental over the pipe via `--lines`. 
 
 ## 2. Round-trip via canonical EDN — `^cedn`
 
