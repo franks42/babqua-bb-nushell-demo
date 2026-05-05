@@ -30,6 +30,57 @@ quarto render nu-pipelines.qmd
 open _site/nu-pipelines.html
 ```
 
+## Live editing
+
+For interactive iteration — edits trigger automatic re-render and the
+browser refreshes itself.
+
+### Basic: `quarto preview`
+
+```bash
+quarto preview nu-pipelines.qmd
+```
+
+Opens the rendered page in your default browser, watches the `.qmd`
+file, re-renders on every save. Each save spawns a fresh bb process
+(~50-150ms) plus a fresh `nu` per block (~50ms each). Round-trip per
+save: ~200-400ms. Fine for casual editing.
+
+### Faster: persistent bb session
+
+Avoid paying for bb startup + `(require ...)` on every save by keeping
+a long-lived bb nREPL session warm:
+
+```bash
+# Start once per session (before `quarto preview`)
+bb _extensions/scicloj/bb/babqua-lifecycle.bb start
+
+quarto preview nu-pipelines.qmd
+
+# When done
+bb _extensions/scicloj/bb/babqua-lifecycle.bb stop
+```
+
+The persistent session keeps the `user` namespace warm across saves —
+`nu->` / `nu->edn` defs and any `(require ...)` cost only get paid
+once. Renders feel near-instant.
+
+**Caveat**: `def`s also survive *removal*. If you delete `(def x 42)`
+from a block, `x` stays bound until you `stop`+`start` again. To opt
+out per-document, add to the frontmatter:
+
+```yaml
+babqua:
+  reset-on-render: true
+```
+
+### VS Code integration
+
+Install the [Quarto VS Code extension](https://marketplace.visualstudio.com/items?itemName=quarto.quarto).
+Cmd+Shift+K opens an in-editor preview pane (no separate browser
+window). Edits in VS Code, edits from CLI tools, edits from an AI
+assistant — all trigger the same file watcher.
+
 ## What's here
 
 - `nu-pipelines.qmd` — the demo notebook. Five sections covering
